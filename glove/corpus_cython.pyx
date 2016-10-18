@@ -255,28 +255,46 @@ def construct_cooccurrence_matrix(corpus, dictionary, int supplied,
             if outer_word == -1:
                 continue
 
-            window_stop = int_min(i + window_size + 1, wordslen)
+            if window_size >= 0:
+                window_stop = int_min(i + window_size + 1, wordslen)
 
-            for j in range(i, window_stop):
-                inner_word = word_ids[j]
+                for j in range(i + 1, window_stop):
+                    inner_word = word_ids[j]
 
-                if inner_word == -1:
-                    continue
+                    if inner_word == -1:
+                        continue
 
-                # Do nothing if the words are the same.
-                if inner_word == outer_word:
-                    continue
+                    # Do nothing if the words are the same.
+                    if inner_word == outer_word:
+                        continue
 
-                if inner_word < outer_word:
-                    increment_matrix(matrix,
-                                     inner_word,
-                                     outer_word,
-                                     1.0 / (j - i))
-                else:
-                    increment_matrix(matrix,
-                                     outer_word,
-                                     inner_word,
-                                     1.0 / (j - i))
+                    if inner_word < outer_word:
+                        increment_matrix(matrix,
+                                        inner_word,
+                                        outer_word,
+                                        1.0 / (j - i))
+                    else:
+                        increment_matrix(matrix,
+                                        outer_word,
+                                        inner_word,
+                                        1.0 / (j - i))
+            else:
+                for j in range(i + 1, wordslen):
+                    inner_word = word_ids[j]
+
+                    if inner_word == -1:
+                        continue
+
+                    if inner_word < outer_word:
+                        increment_matrix(matrix,
+                                        inner_word,
+                                        outer_word,
+                                        1.0)
+                    else:
+                        increment_matrix(matrix,
+                                        outer_word,
+                                        inner_word,
+                                        1.0)
 
     # Create the matrix.
     mat = matrix_to_coo(matrix, len(dictionary))
