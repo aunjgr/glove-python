@@ -9,168 +9,10 @@ from libc.stdlib cimport malloc, free
 
 from cython.operator cimport dereference as deref
 from libcpp.vector cimport vector
+from libcpp.unordered_map cimport unordered_map
 
 
 cdef inline int int_min(int a, int b) nogil: return a if a <= b else b
-
-
-cdef int binary_search(int* vec, int size, int first, int last, int x) nogil:
-    """
-    Binary seach in an array of ints
-    """
-
-    cdef int mid
-
-    while (first < last):
-        mid = (first + last) / 2
-        if (vec[mid] == x):
-            return mid
-        elif vec[mid] > x:
-            last = mid - 1
-        else:
-            first = mid + 1
-
-    if (first == size):
-        return first
-    elif vec[first] > x:
-        return first
-    else:
-        return first + 1
-
-
-cdef struct SparseRowMatrix:
-    vector[vector[int]] *indices
-    vector[vector[float]] *data
-
-
-cdef SparseRowMatrix* new_matrix():
-    """
-    Allocate and initialize a new matrix
-    """
-
-    cdef SparseRowMatrix* mat
-
-    mat = <SparseRowMatrix*>malloc(sizeof(SparseRowMatrix))
-
-    if mat == NULL:
-        raise MemoryError()
-
-    mat.indices = new vector[vector[int]]()
-    mat.data = new vector[vector[float]]()
-
-    return mat
-
-
-cdef void free_matrix(SparseRowMatrix* mat) nogil:
-    """
-    Deallocate the data of a matrix
-    """
-
-    cdef int i
-    cdef int rows = mat.indices.size()
-
-    for i in range(rows):
-        deref(mat.indices)[i].clear()
-        deref(mat.data)[i].clear()
-
-    del mat.indices
-    del mat.data
-
-    free(mat)
-
-
-cdef void increment_matrix(SparseRowMatrix* mat, int row, int col, float increment) nogil:
-    """
-    Increment the (row, col) entry of mat by increment.
-    """
-
-    cdef vector[int]* row_indices
-    cdef vector[float]* row_data
-    cdef int idx
-    cdef int col_at_idx
-
-    # Add new row if necessary
-    while row >= mat.indices.size():
-        mat.indices.push_back(vector[int]())
-        mat.data.push_back(vector[float]())
-
-    row_indices = &(deref(mat.indices)[row])
-    row_data = &(deref(mat.data)[row])
-
-    # Find the column element, or the position where
-    # a new element should be inserted
-    if row_indices.size() == 0:
-        idx = 0
-    else:
-        idx = binary_search(&(deref(row_indices)[0]), row_indices.size(),
-                            0, row_indices.size(), col)
-
-    # Element to be added at the end
-    if idx == row_indices.size():
-        row_indices.insert(row_indices.begin() + idx, col)
-        row_data.insert(row_data.begin() + idx, increment)
-        return
-
-    col_at_idx = deref(row_indices)[idx]
-
-    if col_at_idx == col:
-        # Element to be incremented
-        deref(row_data)[idx] = deref(row_data)[idx] + increment
-    else:
-        # Element to be inserted
-        row_indices.insert(row_indices.begin() + idx, col)
-        row_data.insert(row_data.begin() + idx, increment)
-
-
-cdef int matrix_nnz(SparseRowMatrix* mat) nogil:
-    """
-    Get the number of nonzero entries in mat
-    """
-
-    cdef int i
-    cdef int size = 0
-
-    for i in range(mat.indices.size()):
-        size += deref(mat.indices)[i].size()
-
-    return size
-
-
-cdef matrix_to_coo(SparseRowMatrix* mat, int shape):
-    """
-    Convert to a shape by shape COO matrix.
-    """
-
-    cdef int i, j
-    cdef int row
-    cdef int col
-    cdef int rows = mat.indices.size()
-    cdef int no_collocations = matrix_nnz(mat)
-
-    # Create the constituent numpy arrays.
-    row_np = np.empty(no_collocations, dtype=np.int32)
-    col_np = np.empty(no_collocations, dtype=np.int32)
-    data_np = np.empty(no_collocations, dtype=np.float64)
-    cdef int[:] row_view = row_np
-    cdef int[:] col_view = col_np
-    cdef double[:] data_view = data_np
-
-    j = 0
-
-    for row in range(rows):
-        for i in range(deref(mat.indices)[row].size()):
-
-            row_view[j] = row
-            col_view[j] = deref(mat.indices)[row][i]
-            data_view[j] = deref(mat.data)[row][i]
-
-            j += 1
-
-    # Create and return the matrix.
-    return sp.coo_matrix((data_np, (row_np, col_np)),
-                         shape=(shape,
-                                shape),
-                         dtype=np.float64)
 
 
 cdef int words_to_ids(list words, vector[int]& word_ids,
@@ -205,6 +47,10 @@ cdef int words_to_ids(list words, vector[int]& word_ids,
 
             word_ids.push_back(word_id)
 
+    elif supplied == -1:
+        for word in words:
+            word_ids.push_back(word)
+
     else:
         for word in words:
             word_id = dictionary.setdefault(word,
@@ -224,7 +70,7 @@ def construct_cooccurrence_matrix(corpus, dictionary, int supplied,
     """
 
     # Declare the cooccurrence map
-    cdef SparseRowMatrix* matrix = new_matrix()
+    cdef unordered_map[unsigned long, float] matrix
 
     # String processing variables.
     cdef list words
@@ -269,15 +115,9 @@ def construct_cooccurrence_matrix(corpus, dictionary, int supplied,
                         continue
 
                     if inner_word < outer_word:
-                        increment_matrix(matrix,
-                                        inner_word,
-                                        outer_word,
-                                        1.0 / (j - i))
+                        matrix[(<unsigned long>inner_word << 32) + outer_word] += 1.0 / (j - i)
                     else:
-                        increment_matrix(matrix,
-                                        outer_word,
-                                        inner_word,
-                                        1.0 / (j - i))
+                        matrix[(<unsigned long>outer_word << 32) + inner_word] += 1.0 / (j - i)
             else:
                 for j in range(i + 1, wordslen):
                     inner_word = word_ids[j]
@@ -286,18 +126,24 @@ def construct_cooccurrence_matrix(corpus, dictionary, int supplied,
                         continue
 
                     if inner_word < outer_word:
-                        increment_matrix(matrix,
-                                        inner_word,
-                                        outer_word,
-                                        1.0)
+                        matrix[(<unsigned long>inner_word << 32) + outer_word] += 1.0
                     else:
-                        increment_matrix(matrix,
-                                        outer_word,
-                                        inner_word,
-                                        1.0)
+                        matrix[(<unsigned long>outer_word << 32) + inner_word] += 1.0
 
     # Create the matrix.
-    mat = matrix_to_coo(matrix, len(dictionary))
-    free_matrix(matrix)
+    row_np = np.empty(len(matrix), dtype=np.int32)
+    col_np = np.empty(len(matrix), dtype=np.int32)
+    data_np = np.empty(len(matrix), dtype=np.float64)
 
-    return mat
+    j = 0
+
+    for item in matrix:
+        row_np[j] = item.first >> 32
+        col_np[j] = item.first & <unsigned int> 0xffffffff
+        data_np[j] = item.second
+
+        j += 1
+
+    # Create and return the matrix.
+    dim = col_np.max() + 1
+    return sp.coo_matrix((data_np, (row_np, col_np)), shape=(dim, dim), dtype=np.float64)
